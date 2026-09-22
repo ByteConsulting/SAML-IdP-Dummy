@@ -104,6 +104,9 @@ async def login_page(request: Request):
     """
 
 
+AVD_TARGET_URL = "https://client.wvd.microsoft.com/arm/webclient/index.html?tenant=eeacdbf6-7e71-4be4-92be-e4ab1ae783b8"
+
+
 @app.post("/saml/auth", response_class=HTMLResponse)
 async def authenticate(
     username: str = Form(...),
@@ -114,7 +117,9 @@ async def authenticate(
 ):
     key_pem, cert_pem = get_keys()
 
-    # Relevante Request-ID ermitteln
+    # Falls kein oder ein leerer RelayState übergeben wurde, leite direkt zu AVD weiter
+    final_relay_state = RelayState if RelayState else AVD_TARGET_URL
+
     in_response_to = extract_request_id(SAMLRequest)
     in_resp_attr = f'InResponseTo="{in_response_to}"' if in_response_to else ""
 
@@ -127,7 +132,6 @@ async def authenticate(
     assertion_id = f"_{uuid.uuid4()}"
     recipient_acs = "https://login.microsoftonline.com/login.srf"
 
-    # SAML Response Template mit exakter Schemakonformität für Entra ID
     saml_xml = f"""<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
                 xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
                 ID="{response_id}"
@@ -174,7 +178,6 @@ async def authenticate(
     root = etree.fromstring(saml_xml.encode("utf-8"))
     assertion = root.find(".//{urn:oasis:names:tc:SAML:2.0:assertion}Assertion")
 
-    # Signieren der Assertion
     signer = XMLSigner(
         c14n_algorithm="http://www.w3.org/2001/10/xml-exc-c14n#",
         signature_algorithm="rsa-sha256",
@@ -182,16 +185,13 @@ async def authenticate(
     )
     signed_assertion = signer.sign(assertion, key=key_pem, cert=cert_pem)
 
-    # Entra verlangt: <ds:Signature> MUSS direkt hinter <saml:Issuer> stehen!
     sig_elem = signed_assertion.find(
         "{http://www.w3.org/2000/09/xmldsig#}Signature"
     )
     if sig_elem is not None:
         signed_assertion.remove(sig_elem)
-        # Direkt an Index 1 einfügen (Index 0 ist Issuer)
         signed_assertion.insert(1, sig_elem)
 
-    # Alte Assertion durch die korrekt strukturierte signierte Assertion ersetzen
     root.remove(assertion)
     root.append(signed_assertion)
 
@@ -205,7 +205,7 @@ async def authenticate(
     <body onload="document.forms[0].submit()">
         <form method="post" action="{recipient_acs}">
             <input type="hidden" name="SAMLResponse" value="{saml_response_b64}" />
-            <input type="hidden" name="RelayState" value="{RelayState}" />
+            <input type="hidden" name="RelayState" value="{final_relay_state}" />
             <noscript><button type="submit">Weiter</button></noscript>
         </form>
     </body>
