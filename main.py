@@ -62,14 +62,16 @@ async def login_page(request: Request):
         saml_request = request.query_params.get("SAMLRequest", "")
         relay_state = request.query_params.get("RelayState", "")
 
+    # Wenn der Benutzer die Seite direkt aufruft (kein SAMLRequest vorhanden):
     if not saml_request:
-        # Einstieg über den direkten Enterprise-App-Link ohne 'select_account'-Zwang
-        app_direct_url = (
-            "https://myapplications.microsoft.com/signin/Azure%20Virtual%20Desktop/9cdead84-a844-4324-93f2-b2e6bb768d07"
-            f"?tenantId={TENANT_ID}"
+        # Direkter Aufruf des ARM-Webclients mit Tenant- und Account-Bindung
+        avd_url = (
+            f"https://client.wvd.microsoft.com/arm/webclient/index.html"
+            f"?tenant={TENANT_ID}"
             f"&login_hint={urllib.parse.quote(DEFAULT_USER)}"
+            f"&domain_hint=my-gamez.com"
         )
-        return RedirectResponse(url=app_direct_url)
+        return RedirectResponse(url=avd_url)
 
     # Liegt der SAMLRequest vor, wird die Maske gerendert und per JS sofort übermittelt
     return f"""
