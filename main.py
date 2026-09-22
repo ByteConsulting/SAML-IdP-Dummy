@@ -61,22 +61,17 @@ async def login_page(request: Request):
         saml_request = request.query_params.get("SAMLRequest", "")
         relay_state = request.query_params.get("RelayState", "")
 
-    # Erstaufruf: Transparenter Bounce über MyApplications mit striktem returnUrl-Parameter
+    # Erstaufruf: Transparenter Handshake über Microsofts RDP-Webclient-Gateway
     if not saml_request:
-        params = urllib.parse.urlencode(
-            {
-                "tenantid": TENANT_ID,
-                "login_hint": DEFAULT_USER,
-                "domain_hint": "my-gamez.com",
-                "returnUrl": AVD_TARGET_URL,
-            }
+        # Dieser Endpunkt erzwingt den Redirect direkt in den AVD-Webclient
+        avd_auth_url = (
+            f"https://client.wvd.microsoft.com/arm/webclient/index.html"
+            f"?tenant={TENANT_ID}"
+            f"&login_hint={urllib.parse.quote(DEFAULT_USER)}"
+            f"&domain_hint=my-gamez.com"
         )
-        ms_bootstrap_url = (
-            f"https://myapplications.microsoft.com/signin?{params}"
-        )
-        return RedirectResponse(url=ms_bootstrap_url)
+        return RedirectResponse(url=avd_auth_url)
 
-    # RelayState von Microsoft unverändert ins Hidden-Input setzen
     return f"""
     <!DOCTYPE html>
     <html lang="de">
