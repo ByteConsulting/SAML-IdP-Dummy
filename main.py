@@ -14,7 +14,10 @@ app = FastAPI(title="DMU SAML IdP")
 IDP_ENTITY_ID = "https://auth.my-gamez.com/saml/metadata"
 TENANT_ID = "eeacdbf6-7e71-4be4-92be-e4ab1ae783b8"
 DEFAULT_USER = "gast@my-gamez.com"
-AVD_URL = f"https://client.wvd.microsoft.com/arm/webclient/index.html?tenant={TENANT_ID}"
+
+# Offizielle Azure Virtual Desktop Client-ID & Webclient Redirect-URI
+AVD_APP_CLIENT_ID = "a85c96dd-3d51-4a50-ab32-604d13f04da5"
+AVD_REDIRECT_URI = "https://client.wvd.microsoft.com/arm/webclient/index.html"
 
 
 def get_keys() -> tuple[bytes, bytes]:
@@ -62,16 +65,23 @@ async def login_page(request: Request):
         relay_state = request.query_params.get("RelayState", "")
 
     # Wenn der Benutzer die Seite direkt aufruft (kein SAMLRequest vorhanden):
-    # Sofortiger transparenter Bounce zu Microsoft mit Hints, damit Microsoft den Handshake startet
+    # Gezielter Aufruf des Entra ID Authorize-Endpunkts, der den Direct-Federation-Handshake erzwingt
     if not saml_request:
-        ms_bootstrap_url = (
-            f"https://client.wvd.microsoft.com/arm/webclient/index.html"
-            f"?tenant={TENANT_ID}"
-            f"&login_hint={urllib.parse.quote(DEFAULT_USER)}"
-            f"&domain_hint=my-gamez.com"
+        params = urllib.parse.urlencode(
+            {
+                "client_id": AVD_APP_CLIENT_ID,
+                "response_type": "id_token code",
+                "redirect_uri": AVD_REDIRECT_URI,
+                "response_mode": "fragment",
+                "scope": "openid profile email",
+                "domain_hint": "my-gamez.com",
+                "login_hint": DEFAULT_USER,
+            }
         )
+        ms_bootstrap_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/authorize?{params}"
         return RedirectResponse(url=ms_bootstrap_url)
 
+    # Ab hier wird die eigene DMU-ID-Maske gerendert, da der SAMLRequest vorliegt
     return f"""
     <!DOCTYPE html>
     <html lang="de">
@@ -139,7 +149,7 @@ async def authenticate(
     response_id = f"_{uuid.uuid4()}"
     assertion_id = f"_{uuid.uuid4()}"
 
-    # Fester SAML ACS Endpunkt von Microsoft
+    # Fester SAML ACS-Endpunkt von Microsoft
     recipient_acs = "https://login.microsoftonline.com/login.srf"
 
     saml_xml = f"""<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
@@ -195,6 +205,7 @@ async def authenticate(
     )
     signed_assertion = signer.sign(assertion, key=key_pem, cert=cert_pem)
 
+    # Entra verlangt: <ds:Signature> direkt an Position 1 hinter <saml:Issuer>
     sig_elem = signed_assertion.find(
         "{http://www.w3.org/2000/09/xmldsig#}Signature"
     )
