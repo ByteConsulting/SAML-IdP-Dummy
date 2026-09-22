@@ -62,14 +62,23 @@ async def login_page(request: Request):
         saml_request = request.query_params.get("SAMLRequest", "")
         relay_state = request.query_params.get("RelayState", "")
 
-    # Erstaufruf: Transparenter Bounce über AVD mit Tenant-, Domain- und Login-Hint
+    # Wenn der Benutzer die Seite direkt aufruft (kein SAMLRequest vorhanden):
+    # Gezielter OAuth2-Handshake, der den "Konto auswählen"-Dialog (select_account) umgeht
     if not saml_request:
-        avd_auth_url = (
-            f"{AVD_TARGET_URL}"
-            f"&login_hint={urllib.parse.quote(DEFAULT_USER)}"
-            f"&domain_hint=my-gamez.com"
+        params = urllib.parse.urlencode(
+            {
+                # Offizielle First-Party App für Windows Virtual Desktop Client
+                "client_id": "a85c96dd-3d51-4a50-ab32-604d13f04da5",
+                "response_type": "code",
+                "redirect_uri": "https://client.wvd.microsoft.com/arm/webclient/index.html",
+                "domain_hint": "my-gamez.com",
+                "login_hint": DEFAULT_USER,
+                # Zwingt Microsoft, direkt zur Föderation zu springen statt ein Konto auswählen zu lassen
+                "prompt": "login",
+            }
         )
-        return RedirectResponse(url=avd_auth_url)
+        ms_bootstrap_url = f"https://login.microsoftonline.com/common/oauth2/v2.0/authorize?{params}"
+        return RedirectResponse(url=ms_bootstrap_url)
 
     return f"""
     <!DOCTYPE html>
