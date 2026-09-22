@@ -1,13 +1,13 @@
 import base64
 from datetime import datetime, timedelta, timezone
 import os
+import urllib.parse
 import uuid
-from typing import Optional
-from fastapi import FastAPI, Form, HTTPException, Request
+import zlib
+from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
 from lxml import etree
 from signxml import XMLSigner
-
 
 app = FastAPI(title="DMU SAML IdP Dummy")
 
@@ -15,14 +15,12 @@ IDP_ENTITY_ID = "https://auth.my-gamez.com/saml/metadata"
 
 
 def get_keys() -> tuple[bytes, bytes]:
-    # 1. Prio: Coolify Environment Variables
     env_key = os.getenv("SAML_PRIVATE_KEY")
     env_cert = os.getenv("SAML_PUBLIC_CERT")
 
     if env_key and env_cert:
         return env_key.encode("utf-8"), env_cert.encode("utf-8")
 
-    # 2. Fallback: Lokale Dateien (idp_private.key / idp_public.cer)
     with open("idp_private.key", "rb") as f:
         key_data = f.read()
     with open("idp_public.cer", "rb") as f:
@@ -30,19 +28,33 @@ def get_keys() -> tuple[bytes, bytes]:
     return key_data, cert_data
 
 
-@app.api_route("/saml/login", methods=["GET", "POST"], response_class=HTMLResponse)
-async def login_page(request: Request):
-    """Nimmt sowohl GET- (Redirect Binding) als auch POST-Requests (POST Binding)
+def extract_request_id(saml_request_b64: str) -> str:
+    """Extrahiert die ID aus dem SAMLRequest von Microsoft."""
+    if not saml_request_b64:
+        return ""
+    try:
+        raw = base64.b64decode(urllib.parse.unquote(saml_request_b64))
+        try:
+            decompressed = zlib.decompress(raw, -15)
+        except Exception:
+            decompressed = raw
+        root = etree.fromstring(decompressed)
+        return root.get("ID", "")
+    except Exception:
+        return ""
 
-    von Microsoft Entra ID entgegen.
-    """
+
+@app.api_route(
+    "/saml/login", methods=["GET", "POST"], response_class=HTMLResponse
+)
+async def login_page(request: Request):
     saml_request = ""
     relay_state = ""
 
     if request.method == "POST":
         form_data = await request.form()
-        saml_request = form_data.get("SAMLRequest", "")
-        relay_state = form_data.get("RelayState", "")
+        saml_request = str(form_data.get("SAMLRequest", ""))
+        relay_state = str(form_data.get("RelayState", ""))
     else:
         saml_request = request.query_params.get("SAMLRequest", "")
         relay_state = request.query_params.get("RelayState", "")
@@ -98,8 +110,13 @@ async def authenticate(
     password: str = Form(...),
     mfa_token: str = Form(...),
     RelayState: str = Form(""),
+    SAMLRequest: str = Form(""),
 ):
     key_pem, cert_pem = get_keys()
+
+    # Relevante Request-ID ermitteln
+    in_response_to = extract_request_id(SAMLRequest)
+    in_resp_attr = f'InResponseTo="{in_response_to}"' if in_response_to else ""
 
     now = datetime.now(timezone.utc)
     issue_instant = now.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -110,11 +127,14 @@ async def authenticate(
     assertion_id = f"_{uuid.uuid4()}"
     recipient_acs = "https://login.microsoftonline.com/login.srf"
 
+    # SAML Response Template mit exakter Schemakonformität für Entra ID
     saml_xml = f"""<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
                 xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
-                ID="{response_id}" Version="2.0"
+                ID="{response_id}"
+                Version="2.0"
                 IssueInstant="{issue_instant}"
-                Destination="{recipient_acs}">
+                Destination="{recipient_acs}"
+                {in_resp_attr}>
         <saml:Issuer>{IDP_ENTITY_ID}</saml:Issuer>
         <samlp:Status>
             <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
@@ -124,7 +144,7 @@ async def authenticate(
             <saml:Subject>
                 <saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">{username}</saml:NameID>
                 <saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
-                    <saml:SubjectConfirmationData NotOnOrAfter="{not_on_or_after}" Recipient="{recipient_acs}"/>
+                    <saml:SubjectConfirmationData NotOnOrAfter="{not_on_or_after}" Recipient="{recipient_acs}" {in_resp_attr}/>
                 </saml:SubjectConfirmation>
             </saml:Subject>
             <saml:Conditions NotBefore="{not_before}" NotOnOrAfter="{not_on_or_after}">
@@ -154,6 +174,7 @@ async def authenticate(
     root = etree.fromstring(saml_xml.encode("utf-8"))
     assertion = root.find(".//{urn:oasis:names:tc:SAML:2.0:assertion}Assertion")
 
+    # Signieren der Assertion
     signer = XMLSigner(
         c14n_algorithm="http://www.w3.org/2001/10/xml-exc-c14n#",
         signature_algorithm="rsa-sha256",
@@ -161,6 +182,16 @@ async def authenticate(
     )
     signed_assertion = signer.sign(assertion, key=key_pem, cert=cert_pem)
 
+    # Entra verlangt: <ds:Signature> MUSS direkt hinter <saml:Issuer> stehen!
+    sig_elem = signed_assertion.find(
+        "{http://www.w3.org/2000/09/xmldsig#}Signature"
+    )
+    if sig_elem is not None:
+        signed_assertion.remove(sig_elem)
+        # Direkt an Index 1 einfügen (Index 0 ist Issuer)
+        signed_assertion.insert(1, sig_elem)
+
+    # Alte Assertion durch die korrekt strukturierte signierte Assertion ersetzen
     root.remove(assertion)
     root.append(signed_assertion)
 
