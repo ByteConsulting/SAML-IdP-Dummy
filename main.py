@@ -67,18 +67,16 @@ async def login_page(request: Request):
     if not saml_request:
         params = urllib.parse.urlencode(
             {
-                # Offizielle First-Party App für Windows Virtual Desktop Client
                 "client_id": "a85c96dd-3d51-4a50-ab32-604d13f04da5",
                 "response_type": "code",
                 "redirect_uri": "https://client.wvd.microsoft.com/arm/webclient/index.html",
                 "scope": "openid profile email https://wvd.microsoft.com/.default",
                 "domain_hint": "my-gamez.com",
                 "login_hint": DEFAULT_USER,
-                # Zwingt Microsoft, direkt zur Föderation zu springen statt ein Konto auswählen zu lassen
-                "prompt": "login",
             }
         )
-        ms_bootstrap_url = f"https://login.microsoftonline.com/common/oauth2/v2.0/authorize?{params}"
+        # Direkt den Tenant ansteuern, damit Direct Federation sofort ohne Klick greift
+        ms_bootstrap_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/authorize?{params}"
         return RedirectResponse(url=ms_bootstrap_url)
 
     return f"""
