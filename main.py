@@ -5,7 +5,7 @@ import urllib.parse
 import uuid
 import zlib
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 from lxml import etree
 from signxml import XMLSigner
 
@@ -32,7 +32,6 @@ def get_keys() -> tuple[bytes, bytes]:
 
 
 def extract_request_id(saml_request_b64: str) -> str:
-    """Dekodiert den SAMLRequest von Microsoft und extrahiert die Request-ID."""
     if not saml_request_b64:
         return ""
     try:
@@ -62,18 +61,56 @@ async def login_page(request: Request):
         saml_request = request.query_params.get("SAMLRequest", "")
         relay_state = request.query_params.get("RelayState", "")
 
-    # Wenn der Benutzer die Seite direkt aufruft (kein SAMLRequest vorhanden):
+    # FALL 1: Benutzer ruft die Seite direkt im Browser auf (kein SAML-Request vorhanden)
+    # Zeige die saubere DMU-ID Maske. Der Klick startet den Handshake mit Tenant- & User-Hints.
     if not saml_request:
-        # Direkter Aufruf des ARM-Webclients mit Tenant- und Account-Bindung
-        avd_url = (
-            f"https://client.wvd.microsoft.com/arm/webclient/index.html"
-            f"?tenant={TENANT_ID}"
+        bootstrap_target = (
+            f"{AVD_TARGET_URL}"
             f"&login_hint={urllib.parse.quote(DEFAULT_USER)}"
             f"&domain_hint=my-gamez.com"
         )
-        return RedirectResponse(url=avd_url)
+        return f"""
+        <!DOCTYPE html>
+        <html lang="de">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>DMU Workspace Access</title>
+            <style>
+                body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; color: #f8fafc; }}
+                .card {{ background: #1e293b; padding: 2.5rem; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); width: 380px; border: 1px solid #334155; }}
+                h2 {{ margin-top: 0; font-size: 1.5rem; text-align: center; margin-bottom: 1.5rem; }}
+                .badge {{ display: inline-block; background: #0284c7; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; vertical-align: middle; }}
+                .form-group {{ margin-bottom: 1.2rem; }}
+                label {{ display: block; margin-bottom: .4rem; font-size: 0.85rem; color: #94a3b8; }}
+                input {{ width: 100%; padding: .65rem; background: #0f172a; border: 1px solid #475569; border-radius: 6px; box-sizing: border-box; color: #f8fafc; font-size: 0.95rem; }}
+                a.btn {{ display: block; text-align: center; box-sizing: border-box; width: 100%; padding: .75rem; background: #2563eb; color: white; border-radius: 6px; font-weight: 600; text-decoration: none; font-size: 1rem; margin-top: 1rem; }}
+                a.btn:hover {{ background: #1d4ed8; }}
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <h2>DMU-ID <span class="badge">SAML IdP</span></h2>
+                <div class="form-group">
+                    <label>E-Mail-Adresse</label>
+                    <input type="email" value="{DEFAULT_USER}" readonly />
+                </div>
+                <div class="form-group">
+                    <label>Passwort</label>
+                    <input type="password" value="••••••••••••" readonly />
+                </div>
+                <div class="form-group">
+                    <label>2. Faktor (FIDO2 / TOTP)</label>
+                    <input type="text" value="654321 (Gültig)" readonly />
+                </div>
+                <a href="{bootstrap_target}" class="btn">Workspace starten</a>
+            </div>
+        </body>
+        </html>
+        """
 
-    # Liegt der SAMLRequest vor, wird die Maske gerendert und per JS sofort übermittelt
+    # FALL 2: Microsoft hat den Benutzer via SAMLRequest zurückgeschickt
+    # Automatischer Submit in Sekundenbruchteilen ohne erneuten Klick
     return f"""
     <!DOCTYPE html>
     <html lang="de">
@@ -82,48 +119,10 @@ async def login_page(request: Request):
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>DMU Workspace Access</title>
         <style>
-            body {{
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                background: #0f172a;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                height: 100vh;
-                margin: 0;
-                color: #f8fafc;
-            }}
-            .card {{
-                background: #1e293b;
-                padding: 2.5rem;
-                border-radius: 12px;
-                box-shadow: 0 10px 25px rgba(0,0,0,0.5);
-                width: 380px;
-                border: 1px solid #334155;
-                text-align: center;
-            }}
-            h2 {{
-                margin-top: 0;
-                font-size: 1.5rem;
-                margin-bottom: 0.5rem;
-            }}
-            p {{
-                color: #94a3b8;
-                font-size: 0.9rem;
-                margin: 0 0 1.5rem 0;
-            }}
-            .spinner {{
-                border: 3px solid #334155;
-                border-top: 3px solid #38bdf8;
-                border-radius: 50%;
-                width: 36px;
-                height: 36px;
-                animation: spin 1s linear infinite;
-                margin: 0 auto;
-            }}
-            @keyframes spin {{
-                0% {{ transform: rotate(0deg); }}
-                100% {{ transform: rotate(360deg); }}
-            }}
+            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; color: #f8fafc; }}
+            .card {{ background: #1e293b; padding: 2.5rem; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); width: 380px; border: 1px solid #334155; text-align: center; }}
+            .spinner {{ border: 3px solid #334155; border-top: 3px solid #38bdf8; border-radius: 50%; width: 36px; height: 36px; animation: spin 1s linear infinite; margin: 1.5rem auto 0; }}
+            @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
         </style>
         <script>
             window.addEventListener('DOMContentLoaded', () => {{
@@ -133,8 +132,8 @@ async def login_page(request: Request):
     </head>
     <body>
         <div class="card">
-            <h2>DMU-ID Workspace</h2>
-            <p>Sitzung wird verifiziert und gestartet...</p>
+            <h2>DMU Workspace</h2>
+            <p style="color: #94a3b8; font-size: 0.9rem;">Sitzung wird autorisiert...</p>
             <div class="spinner"></div>
             <form id="samlForm" method="post" action="/saml/auth" style="display: none;">
                 <input type="hidden" name="RelayState" value="{relay_state}" />
