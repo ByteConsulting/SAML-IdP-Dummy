@@ -64,19 +64,21 @@ async def login_page(request: Request):
 
     # Wenn der Benutzer die Seite direkt aufruft (kein SAMLRequest vorhanden):
     # Gezielter OAuth2-Handshake, der den "Konto auswählen"-Dialog (select_account) umgeht
+    # Wenn kein SAMLRequest vorliegt:
+    # Direkter HRD-Bounce über den Tenant-OAuth-Endpunkt zur Erzwingung des SAML-Handshakes
     if not saml_request:
         params = urllib.parse.urlencode(
             {
-                "client_id": "a85c96dd-3d51-4a50-ab32-604d13f04da5",
-                "response_type": "code",
-                "redirect_uri": "https://client.wvd.microsoft.com/arm/webclient/index.html",
-                "scope": "openid profile email https://wvd.microsoft.com/.default",
+                "client_id": "00000002-0000-0000-c000-000000000000",  # Microsoft Windows Azure Active Directory (global im Tenant vorhanden)
+                "response_type": "id_token",
+                "redirect_uri": AVD_TARGET_URL,
+                "scope": "openid",
                 "domain_hint": "my-gamez.com",
                 "login_hint": DEFAULT_USER,
+                "nonce": str(uuid.uuid4()),
             }
         )
-        # Direkt den Tenant ansteuern, damit Direct Federation sofort ohne Klick greift
-        ms_bootstrap_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/authorize?{params}"
+        ms_bootstrap_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/authorize?{params}"
         return RedirectResponse(url=ms_bootstrap_url)
 
     return f"""
