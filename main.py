@@ -62,14 +62,14 @@ async def login_page(request: Request):
         saml_request = request.query_params.get("SAMLRequest", "")
         relay_state = request.query_params.get("RelayState", "")
 
-    # Erstaufruf: Transparenter Handshake über den AVD-Client mit Tenant-, Domain- und Login-Hint
     if not saml_request:
-        avd_direct_bootstrap = (
-            f"{AVD_TARGET_URL}"
+        # Einstieg über den direkten Enterprise-App-Link ohne 'select_account'-Zwang
+        app_direct_url = (
+            "https://myapplications.microsoft.com/signin/Azure%20Virtual%20Desktop/9cdead84-a844-4324-93f2-b2e6bb768d07"
+            f"?tenantId={TENANT_ID}"
             f"&login_hint={urllib.parse.quote(DEFAULT_USER)}"
-            f"&domain_hint=my-gamez.com"
         )
-        return RedirectResponse(url=avd_direct_bootstrap)
+        return RedirectResponse(url=app_direct_url)
 
     # Liegt der SAMLRequest vor, wird die Maske gerendert und per JS sofort übermittelt
     return f"""
