@@ -1,0 +1,170 @@
+import base64
+from datetime import datetime, timedelta, timezone
+import os
+import uuid
+from fastapi import FastAPI, Form, Request
+from fastapi.responses import HTMLResponse
+from lxml import etree
+from signxml import XMLSigner
+
+app = FastAPI(title="DMU SAML IdP Dummy")
+
+IDP_ENTITY_ID = "https://auth.my-gamez.com/saml/metadata"
+
+
+def get_keys() -> tuple[bytes, bytes]:
+    # 1. Prio: Coolify Environment Variables
+    env_key = os.getenv("SAML_PRIVATE_KEY")
+    env_cert = os.getenv("SAML_PUBLIC_CERT")
+
+    if env_key and env_cert:
+        return env_key.encode("utf-8"), env_cert.encode("utf-8")
+
+    # 2. Fallback: Lokale Dateien (idp_private.key / idp_public.cer)
+    with open("idp_private.key", "rb") as f:
+        key_data = f.read()
+    with open("idp_public.cer", "rb") as f:
+        cert_data = f.read()
+    return key_data, cert_data
+
+
+@app.get("/saml/login", response_class=HTMLResponse)
+async def login_page(
+    request: Request, SAMLRequest: str = "", RelayState: str = ""
+):
+    """Zeigt das Dummy-Loginformular inkl.
+
+    Fake-2FA-Code-Abfrage.
+    """
+    return f"""
+    <!DOCTYPE html>
+    <html lang="de">
+    <head>
+        <meta charset="UTF-8">
+        <title>DMU-ID Login</title>
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; color: #f8fafc; }}
+            .card {{ background: #1e293b; padding: 2.5rem; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); width: 380px; border: 1px solid #334155; }}
+            h2 {{ margin-top: 0; font-size: 1.5rem; text-align: center; margin-bottom: 1.5rem; }}
+            .badge {{ display: inline-block; background: #0284c7; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; vertical-align: middle; }}
+            .form-group {{ margin-bottom: 1.2rem; }}
+            label {{ display: block; margin-bottom: .4rem; font-size: 0.85rem; color: #94a3b8; }}
+            input {{ width: 100%; padding: .65rem; background: #0f172a; border: 1px solid #475569; border-radius: 6px; box-sizing: border-box; color: #f8fafc; font-size: 0.95rem; }}
+            input:focus {{ outline: none; border-color: #38bdf8; }}
+            button {{ width: 100%; padding: .75rem; background: #2563eb; border: none; color: white; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 1rem; margin-top: 0.5rem; }}
+            button:hover {{ background: #1d4ed8; }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h2>DMU-ID <span class="badge">SAML IdP</span></h2>
+            <form method="post" action="/saml/auth">
+                <input type="hidden" name="RelayState" value="{RelayState}" />
+                <div class="form-group">
+                    <label>E-Mail-Adresse</label>
+                    <input type="email" name="username" value="gast@my-gamez.com" required />
+                </div>
+                <div class="form-group">
+                    <label>Passwort</label>
+                    <input type="password" name="password" value="DummyPass123!" required />
+                </div>
+                <div class="form-group">
+                    <label>2. Faktor (Simulierter TOTP / Token)</label>
+                    <input type="text" name="mfa_token" value="654321" required />
+                </div>
+                <button type="submit">Mit 2FA verifizieren</button>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.post("/saml/auth", response_class=HTMLResponse)
+async def authenticate(
+    username: str = Form(...),
+    password: str = Form(...),
+    mfa_token: str = Form(...),
+    RelayState: str = Form(""),
+):
+    key_pem, cert_pem = get_keys()
+
+    now = datetime.now(timezone.utc)
+    issue_instant = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    not_before = (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    not_on_or_after = (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    response_id = f"_{uuid.uuid4()}"
+    assertion_id = f"_{uuid.uuid4()}"
+    recipient_acs = "https://login.microsoftonline.com/login.srf"
+
+    saml_xml = f"""<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+                xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+                ID="{response_id}" Version="2.0"
+                IssueInstant="{issue_instant}"
+                Destination="{recipient_acs}">
+        <saml:Issuer>{IDP_ENTITY_ID}</saml:Issuer>
+        <samlp:Status>
+            <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
+        </samlp:Status>
+        <saml:Assertion ID="{assertion_id}" Version="2.0" IssueInstant="{issue_instant}">
+            <saml:Issuer>{IDP_ENTITY_ID}</saml:Issuer>
+            <saml:Subject>
+                <saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">{username}</saml:NameID>
+                <saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
+                    <saml:SubjectConfirmationData NotOnOrAfter="{not_on_or_after}" Recipient="{recipient_acs}"/>
+                </saml:SubjectConfirmation>
+            </saml:Subject>
+            <saml:Conditions NotBefore="{not_before}" NotOnOrAfter="{not_on_or_after}">
+                <saml:AudienceRestriction>
+                    <saml:Audience>urn:federation:MicrosoftOnline</saml:Audience>
+                </saml:AudienceRestriction>
+            </saml:Conditions>
+            <saml:AuthnStatement AuthnInstant="{issue_instant}">
+                <saml:AuthnContext>
+                    <saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport</saml:AuthnContextClassRef>
+                </saml:AuthnContext>
+            </saml:AuthnStatement>
+            <saml:AttributeStatement>
+                <saml:Attribute Name="http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress">
+                    <saml:AttributeValue>{username}</saml:AttributeValue>
+                </saml:Attribute>
+                <saml:Attribute Name="http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name">
+                    <saml:AttributeValue>{username.split('@')[0]}</saml:AttributeValue>
+                </saml:Attribute>
+                <saml:Attribute Name="http://schemas.microsoft.com/claims/authnmethodsreferences">
+                    <saml:AttributeValue>http://schemas.microsoft.com/claims/multipleauthn</saml:AttributeValue>
+                </saml:Attribute>
+            </saml:AttributeStatement>
+        </saml:Assertion>
+    </samlp:Response>"""
+
+    root = etree.fromstring(saml_xml.encode("utf-8"))
+    assertion = root.find(".//{urn:oasis:names:tc:SAML:2.0:assertion}Assertion")
+
+    signer = XMLSigner(
+        c14n_algorithm="http://www.w3.org/2001/10/xml-exc-c14n#",
+        signature_algorithm="rsa-sha256",
+        digest_algorithm="sha256",
+    )
+    signed_assertion = signer.sign(assertion, key=key_pem, cert=cert_pem)
+
+    root.remove(assertion)
+    root.append(signed_assertion)
+
+    signed_xml_bytes = etree.tostring(root, xml_declaration=False)
+    saml_response_b64 = base64.b64encode(signed_xml_bytes).decode("utf-8")
+
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head><title>SAML Redirect</title></head>
+    <body onload="document.forms[0].submit()">
+        <form method="post" action="{recipient_acs}">
+            <input type="hidden" name="SAMLResponse" value="{saml_response_b64}" />
+            <input type="hidden" name="RelayState" value="{RelayState}" />
+            <noscript><button type="submit">Weiter</button></noscript>
+        </form>
+    </body>
+    </html>
+    """
