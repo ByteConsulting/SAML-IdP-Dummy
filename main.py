@@ -67,18 +67,16 @@ async def login_page(request: Request):
     # Wenn der Benutzer die Seite direkt aufruft (kein SAMLRequest vorhanden):
     # Gezielter Aufruf des Entra ID Authorize-Endpunkts, der den Direct-Federation-Handshake erzwingt
     if not saml_request:
+        # Direkter Mandanten-Einstieg über den SAML2-Endpunkt mit Domain- und Login-Hint
         params = urllib.parse.urlencode(
             {
-                "client_id": AVD_APP_CLIENT_ID,
-                "response_type": "id_token code",
-                "redirect_uri": AVD_REDIRECT_URI,
-                "response_mode": "fragment",
-                "scope": "openid profile email",
                 "domain_hint": "my-gamez.com",
                 "login_hint": DEFAULT_USER,
             }
         )
-        ms_bootstrap_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/authorize?{params}"
+        ms_bootstrap_url = (
+            f"https://login.microsoftonline.com/{TENANT_ID}/saml2?{params}"
+        )
         return RedirectResponse(url=ms_bootstrap_url)
 
     # Ab hier wird die eigene DMU-ID-Maske gerendert, da der SAMLRequest vorliegt
