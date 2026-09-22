@@ -71,6 +71,7 @@ async def login_page(request: Request):
                 "client_id": "a85c96dd-3d51-4a50-ab32-604d13f04da5",
                 "response_type": "code",
                 "redirect_uri": "https://client.wvd.microsoft.com/arm/webclient/index.html",
+                "scope": "openid profile email https://wvd.microsoft.com/.default",
                 "domain_hint": "my-gamez.com",
                 "login_hint": DEFAULT_USER,
                 # Zwingt Microsoft, direkt zur Föderation zu springen statt ein Konto auswählen zu lassen
