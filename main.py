@@ -12,6 +12,7 @@ from signxml import XMLSigner
 app = FastAPI(title="DMU SAML IdP Dummy")
 
 IDP_ENTITY_ID = "https://auth.my-gamez.com/saml/metadata"
+AVD_TARGET_URL = "https://client.wvd.microsoft.com/arm/webclient/index.html?tenant=eeacdbf6-7e71-4be4-92be-e4ab1ae783b8"
 
 
 def get_keys() -> tuple[bytes, bytes]:
@@ -29,7 +30,6 @@ def get_keys() -> tuple[bytes, bytes]:
 
 
 def extract_request_id(saml_request_b64: str) -> str:
-    """Extrahiert die ID aus dem SAMLRequest von Microsoft."""
     if not saml_request_b64:
         return ""
     try:
@@ -59,12 +59,17 @@ async def login_page(request: Request):
         saml_request = request.query_params.get("SAMLRequest", "")
         relay_state = request.query_params.get("RelayState", "")
 
+    # Falls der Aufruf direkt erfolgt, nutzen wir als Ziel-RelayState direkt AVD
+    if not relay_state:
+        relay_state = AVD_TARGET_URL
+
     return f"""
     <!DOCTYPE html>
     <html lang="de">
     <head>
         <meta charset="UTF-8">
-        <title>DMU-ID Login</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>DMU Workspace Access</title>
         <style>
             body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; color: #f8fafc; }}
             .card {{ background: #1e293b; padding: 2.5rem; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); width: 380px; border: 1px solid #334155; }}
@@ -96,15 +101,12 @@ async def login_page(request: Request):
                     <label>2. Faktor (Simulierter TOTP / Token)</label>
                     <input type="text" name="mfa_token" value="654321" required />
                 </div>
-                <button type="submit">Mit 2FA verifizieren</button>
+                <button type="submit">Workspace starten</button>
             </form>
         </div>
     </body>
     </html>
     """
-
-
-AVD_TARGET_URL = "https://client.wvd.microsoft.com/arm/webclient/index.html?tenant=eeacdbf6-7e71-4be4-92be-e4ab1ae783b8"
 
 
 @app.post("/saml/auth", response_class=HTMLResponse)
@@ -117,9 +119,9 @@ async def authenticate(
 ):
     key_pem, cert_pem = get_keys()
 
-    # Falls kein oder ein leerer RelayState übergeben wurde, leite direkt zu AVD weiter
     final_relay_state = RelayState if RelayState else AVD_TARGET_URL
 
+    # Nur setzen, wenn tatsächlich ein SP-Request vorlag (IdP-Initiated = kein InResponseTo!)
     in_response_to = extract_request_id(SAMLRequest)
     in_resp_attr = f'InResponseTo="{in_response_to}"' if in_response_to else ""
 
@@ -201,7 +203,7 @@ async def authenticate(
     return f"""
     <!DOCTYPE html>
     <html>
-    <head><title>SAML Redirect</title></head>
+    <head><title>Verbinde mit AVD...</title></head>
     <body onload="document.forms[0].submit()">
         <form method="post" action="{recipient_acs}">
             <input type="hidden" name="SAMLResponse" value="{saml_response_b64}" />
