@@ -32,6 +32,7 @@ def get_keys() -> tuple[bytes, bytes]:
 
 
 def extract_request_id(saml_request_b64: str) -> str:
+    """Dekodiert den SAMLRequest von Microsoft und extrahiert die Request-ID."""
     if not saml_request_b64:
         return ""
     try:
@@ -61,12 +62,10 @@ async def login_page(request: Request):
         saml_request = request.query_params.get("SAMLRequest", "")
         relay_state = request.query_params.get("RelayState", "")
 
-    # Erstaufruf: Transparenter Handshake über Microsofts RDP-Webclient-Gateway
+    # Erstaufruf: Transparenter Bounce über AVD mit Tenant-, Domain- und Login-Hint
     if not saml_request:
-        # Dieser Endpunkt erzwingt den Redirect direkt in den AVD-Webclient
         avd_auth_url = (
-            f"https://client.wvd.microsoft.com/arm/webclient/index.html"
-            f"?tenant={TENANT_ID}"
+            f"{AVD_TARGET_URL}"
             f"&login_hint={urllib.parse.quote(DEFAULT_USER)}"
             f"&domain_hint=my-gamez.com"
         )
@@ -128,8 +127,7 @@ async def authenticate(
 ):
     key_pem, cert_pem = get_keys()
 
-    # Zwingend den RelayState nutzen, den Microsoft uns mitgegeben hat!
-    # Nur wenn dieser tatsächlich leer ist, als Fallback die AVD-URL verwenden.
+    # Verbindlich auf AVD leiten (falls RelayState leer oder auf Portal bezogen)
     final_relay_state = RelayState if RelayState else AVD_TARGET_URL
 
     in_response_to = extract_request_id(SAMLRequest)
@@ -143,6 +141,7 @@ async def authenticate(
     response_id = f"_{uuid.uuid4()}"
     assertion_id = f"_{uuid.uuid4()}"
 
+    # Fester SAML ACS Endpunkt von Microsoft
     recipient_acs = "https://login.microsoftonline.com/login.srf"
 
     saml_xml = f"""<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
@@ -198,6 +197,7 @@ async def authenticate(
     )
     signed_assertion = signer.sign(assertion, key=key_pem, cert=cert_pem)
 
+    # Entra verlangt: <ds:Signature> zwingend direkt hinter <saml:Issuer>
     sig_elem = signed_assertion.find(
         "{http://www.w3.org/2000/09/xmldsig#}Signature"
     )
@@ -214,8 +214,16 @@ async def authenticate(
     return f"""
     <!DOCTYPE html>
     <html>
-    <head><title>Verbinde mit AVD...</title></head>
-    <body onload="document.forms[0].submit()">
+    <head>
+        <title>Verbinde mit AVD...</title>
+        <script>
+            window.onload = function() {{
+                document.forms[0].submit();
+            }};
+        </script>
+    </head>
+    <body style="background: #0f172a; color: #f8fafc; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh;">
+        <p>Authentifizierung erfolgreich. Weiterleitung zu Azure Virtual Desktop...</p>
         <form method="post" action="{recipient_acs}">
             <input type="hidden" name="SAMLResponse" value="{saml_response_b64}" />
             <input type="hidden" name="RelayState" value="{final_relay_state}" />
