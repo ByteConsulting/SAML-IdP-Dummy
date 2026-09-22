@@ -2,10 +2,12 @@ import base64
 from datetime import datetime, timedelta, timezone
 import os
 import uuid
-from fastapi import FastAPI, Form, Request
+from typing import Optional
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from lxml import etree
 from signxml import XMLSigner
+
 
 app = FastAPI(title="DMU SAML IdP Dummy")
 
@@ -28,14 +30,23 @@ def get_keys() -> tuple[bytes, bytes]:
     return key_data, cert_data
 
 
-@app.get("/saml/login", response_class=HTMLResponse)
-async def login_page(
-    request: Request, SAMLRequest: str = "", RelayState: str = ""
-):
-    """Zeigt das Dummy-Loginformular inkl.
+@app.api_route("/saml/login", methods=["GET", "POST"], response_class=HTMLResponse)
+async def login_page(request: Request):
+    """Nimmt sowohl GET- (Redirect Binding) als auch POST-Requests (POST Binding)
 
-    Fake-2FA-Code-Abfrage.
+    von Microsoft Entra ID entgegen.
     """
+    saml_request = ""
+    relay_state = ""
+
+    if request.method == "POST":
+        form_data = await request.form()
+        saml_request = form_data.get("SAMLRequest", "")
+        relay_state = form_data.get("RelayState", "")
+    else:
+        saml_request = request.query_params.get("SAMLRequest", "")
+        relay_state = request.query_params.get("RelayState", "")
+
     return f"""
     <!DOCTYPE html>
     <html lang="de">
@@ -59,7 +70,8 @@ async def login_page(
         <div class="card">
             <h2>DMU-ID <span class="badge">SAML IdP</span></h2>
             <form method="post" action="/saml/auth">
-                <input type="hidden" name="RelayState" value="{RelayState}" />
+                <input type="hidden" name="RelayState" value="{relay_state}" />
+                <input type="hidden" name="SAMLRequest" value="{saml_request}" />
                 <div class="form-group">
                     <label>E-Mail-Adresse</label>
                     <input type="email" name="username" value="gast@my-gamez.com" required />
