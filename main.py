@@ -65,17 +65,22 @@ async def login_page(request: Request):
         relay_state = request.query_params.get("RelayState", "")
 
     # Wenn der Benutzer die Seite direkt aufruft (kein SAMLRequest vorhanden):
-    # Gezielter Aufruf des Entra ID Authorize-Endpunkts, der den Direct-Federation-Handshake erzwingt
+    # Transparenter Bootstrap über den Tenant-Login-Endpunkt
     if not saml_request:
-        # Direkter Mandanten-Einstieg über den SAML2-Endpunkt mit Domain- und Login-Hint
+        target_portal = (
+            f"https://client.wvd.microsoft.com/arm/webclient/index.html"
+            f"?tenant={TENANT_ID}"
+        )
         params = urllib.parse.urlencode(
             {
                 "domain_hint": "my-gamez.com",
                 "login_hint": DEFAULT_USER,
+                "whr": "my-gamez.com",
+                "wctx": target_portal,
             }
         )
         ms_bootstrap_url = (
-            f"https://login.microsoftonline.com/{TENANT_ID}/saml2?{params}"
+            f"https://login.microsoftonline.com/{TENANT_ID}/login?{params}"
         )
         return RedirectResponse(url=ms_bootstrap_url)
 
