@@ -62,25 +62,16 @@ async def login_page(request: Request):
         saml_request = request.query_params.get("SAMLRequest", "")
         relay_state = request.query_params.get("RelayState", "")
 
-    # Wenn der Benutzer die Seite direkt aufruft (kein SAMLRequest vorhanden):
-    # Gezielter OAuth2-Handshake, der den "Konto auswählen"-Dialog (select_account) umgeht
-    # Wenn kein SAMLRequest vorliegt:
-    # Direkter HRD-Bounce über den Tenant-OAuth-Endpunkt zur Erzwingung des SAML-Handshakes
+    # Erstaufruf: Transparenter Handshake über den AVD-Client mit Tenant-, Domain- und Login-Hint
     if not saml_request:
-        params = urllib.parse.urlencode(
-            {
-                "client_id": "00000002-0000-0000-c000-000000000000",  # Microsoft Windows Azure Active Directory (global im Tenant vorhanden)
-                "response_type": "id_token",
-                "redirect_uri": AVD_TARGET_URL,
-                "scope": "openid",
-                "domain_hint": "my-gamez.com",
-                "login_hint": DEFAULT_USER,
-                "nonce": str(uuid.uuid4()),
-            }
+        avd_direct_bootstrap = (
+            f"{AVD_TARGET_URL}"
+            f"&login_hint={urllib.parse.quote(DEFAULT_USER)}"
+            f"&domain_hint=my-gamez.com"
         )
-        ms_bootstrap_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/authorize?{params}"
-        return RedirectResponse(url=ms_bootstrap_url)
+        return RedirectResponse(url=avd_direct_bootstrap)
 
+    # Liegt der SAMLRequest vor, wird die Maske gerendert und per JS sofort übermittelt
     return f"""
     <!DOCTYPE html>
     <html lang="de">
@@ -89,37 +80,66 @@ async def login_page(request: Request):
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>DMU Workspace Access</title>
         <style>
-            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; color: #f8fafc; }}
-            .card {{ background: #1e293b; padding: 2.5rem; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); width: 380px; border: 1px solid #334155; }}
-            h2 {{ margin-top: 0; font-size: 1.5rem; text-align: center; margin-bottom: 1.5rem; }}
-            .badge {{ display: inline-block; background: #0284c7; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; vertical-align: middle; }}
-            .form-group {{ margin-bottom: 1.2rem; }}
-            label {{ display: block; margin-bottom: .4rem; font-size: 0.85rem; color: #94a3b8; }}
-            input {{ width: 100%; padding: .65rem; background: #0f172a; border: 1px solid #475569; border-radius: 6px; box-sizing: border-box; color: #f8fafc; font-size: 0.95rem; }}
-            input:focus {{ outline: none; border-color: #38bdf8; }}
-            button {{ width: 100%; padding: .75rem; background: #2563eb; border: none; color: white; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 1rem; margin-top: 0.5rem; }}
-            button:hover {{ background: #1d4ed8; }}
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                background: #0f172a;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                margin: 0;
+                color: #f8fafc;
+            }}
+            .card {{
+                background: #1e293b;
+                padding: 2.5rem;
+                border-radius: 12px;
+                box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+                width: 380px;
+                border: 1px solid #334155;
+                text-align: center;
+            }}
+            h2 {{
+                margin-top: 0;
+                font-size: 1.5rem;
+                margin-bottom: 0.5rem;
+            }}
+            p {{
+                color: #94a3b8;
+                font-size: 0.9rem;
+                margin: 0 0 1.5rem 0;
+            }}
+            .spinner {{
+                border: 3px solid #334155;
+                border-top: 3px solid #38bdf8;
+                border-radius: 50%;
+                width: 36px;
+                height: 36px;
+                animation: spin 1s linear infinite;
+                margin: 0 auto;
+            }}
+            @keyframes spin {{
+                0% {{ transform: rotate(0deg); }}
+                100% {{ transform: rotate(360deg); }}
+            }}
         </style>
+        <script>
+            window.addEventListener('DOMContentLoaded', () => {{
+                document.getElementById('samlForm').submit();
+            }});
+        </script>
     </head>
     <body>
         <div class="card">
-            <h2>DMU-ID <span class="badge">SAML IdP</span></h2>
-            <form method="post" action="/saml/auth">
+            <h2>DMU-ID Workspace</h2>
+            <p>Sitzung wird verifiziert und gestartet...</p>
+            <div class="spinner"></div>
+            <form id="samlForm" method="post" action="/saml/auth" style="display: none;">
                 <input type="hidden" name="RelayState" value="{relay_state}" />
                 <input type="hidden" name="SAMLRequest" value="{saml_request}" />
-                <div class="form-group">
-                    <label>E-Mail-Adresse</label>
-                    <input type="email" name="username" value="{DEFAULT_USER}" required />
-                </div>
-                <div class="form-group">
-                    <label>Passwort</label>
-                    <input type="password" name="password" value="DummyPass123!" required />
-                </div>
-                <div class="form-group">
-                    <label>2. Faktor (Simulierter TOTP / Token)</label>
-                    <input type="text" name="mfa_token" value="654321" required />
-                </div>
-                <button type="submit">Workspace starten</button>
+                <input type="email" name="username" value="{DEFAULT_USER}" />
+                <input type="password" name="password" value="DummyPass123!" />
+                <input type="text" name="mfa_token" value="654321" />
             </form>
         </div>
     </body>
@@ -137,7 +157,6 @@ async def authenticate(
 ):
     key_pem, cert_pem = get_keys()
 
-    # Verbindlich auf AVD leiten (falls RelayState leer oder auf Portal bezogen)
     final_relay_state = RelayState if RelayState else AVD_TARGET_URL
 
     in_response_to = extract_request_id(SAMLRequest)
@@ -151,7 +170,6 @@ async def authenticate(
     response_id = f"_{uuid.uuid4()}"
     assertion_id = f"_{uuid.uuid4()}"
 
-    # Fester SAML ACS Endpunkt von Microsoft
     recipient_acs = "https://login.microsoftonline.com/login.srf"
 
     saml_xml = f"""<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
@@ -207,7 +225,6 @@ async def authenticate(
     )
     signed_assertion = signer.sign(assertion, key=key_pem, cert=cert_pem)
 
-    # Entra verlangt: <ds:Signature> zwingend direkt hinter <saml:Issuer>
     sig_elem = signed_assertion.find(
         "{http://www.w3.org/2000/09/xmldsig#}Signature"
     )
@@ -232,8 +249,8 @@ async def authenticate(
             }};
         </script>
     </head>
-    <body style="background: #0f172a; color: #f8fafc; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh;">
-        <p>Authentifizierung erfolgreich. Weiterleitung zu Azure Virtual Desktop...</p>
+    <body style="background: #0f172a; color: #f8fafc; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0;">
+        <p>Authentifizierung verifiziert. Weiterleitung zu Azure Virtual Desktop...</p>
         <form method="post" action="{recipient_acs}">
             <input type="hidden" name="SAMLResponse" value="{saml_response_b64}" />
             <input type="hidden" name="RelayState" value="{final_relay_state}" />
