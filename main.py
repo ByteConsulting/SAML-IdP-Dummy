@@ -65,22 +65,19 @@ async def login_page(request: Request):
         relay_state = request.query_params.get("RelayState", "")
 
     # Wenn der Benutzer die Seite direkt aufruft (kein SAMLRequest vorhanden):
-    # Transparenter Bootstrap über den Tenant-Login-Endpunkt
+    # Sauberer GET-Bootstrap über Microsofts Portal-Router mit automatischem Weiterleitungsziel
     if not saml_request:
-        target_portal = (
-            f"https://client.wvd.microsoft.com/arm/webclient/index.html"
-            f"?tenant={TENANT_ID}"
-        )
+        target_avd_url = f"https://client.wvd.microsoft.com/arm/webclient/index.html?tenant={TENANT_ID}"
         params = urllib.parse.urlencode(
             {
-                "domain_hint": "my-gamez.com",
+                "tenantid": TENANT_ID,
                 "login_hint": DEFAULT_USER,
-                "whr": "my-gamez.com",
-                "wctx": target_portal,
+                "domain_hint": "my-gamez.com",
+                "returnUrl": target_avd_url,
             }
         )
         ms_bootstrap_url = (
-            f"https://login.microsoftonline.com/{TENANT_ID}/login?{params}"
+            f"https://myapplications.microsoft.com/signin?{params}"
         )
         return RedirectResponse(url=ms_bootstrap_url)
 
