@@ -132,7 +132,8 @@ async def authenticate(
 
     response_id = f"_{uuid.uuid4()}"
     assertion_id = f"_{uuid.uuid4()}"
-    recipient_acs = "https://login.microsoftonline.com/login.srf"
+    TENANT_ID = "eeacdbf6-7e71-4be4-92be-e4ab1ae783b8"
+    recipient_acs = f"https://login.microsoftonline.com/{TENANT_ID}/login"
 
     saml_xml = f"""<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
                 xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
