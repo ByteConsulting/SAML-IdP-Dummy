@@ -5,14 +5,16 @@ import urllib.parse
 import uuid
 import zlib
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from lxml import etree
 from signxml import XMLSigner
 
-app = FastAPI(title="DMU SAML IdP Dummy")
+app = FastAPI(title="DMU SAML IdP")
 
 IDP_ENTITY_ID = "https://auth.my-gamez.com/saml/metadata"
-AVD_TARGET_URL = "https://client.wvd.microsoft.com/arm/webclient/index.html?tenant=eeacdbf6-7e71-4be4-92be-e4ab1ae783b8"
+TENANT_ID = "eeacdbf6-7e71-4be4-92be-e4ab1ae783b8"
+DEFAULT_USER = "gast@my-gamez.com"
+AVD_URL = f"https://client.wvd.microsoft.com/arm/webclient/index.html?tenant={TENANT_ID}"
 
 
 def get_keys() -> tuple[bytes, bytes]:
@@ -59,9 +61,16 @@ async def login_page(request: Request):
         saml_request = request.query_params.get("SAMLRequest", "")
         relay_state = request.query_params.get("RelayState", "")
 
-    # Falls der Aufruf direkt erfolgt, nutzen wir als Ziel-RelayState direkt AVD
-    if not relay_state:
-        relay_state = AVD_TARGET_URL
+    # Wenn der Benutzer die Seite direkt aufruft (kein SAMLRequest vorhanden):
+    # Sofortiger transparenter Bounce zu Microsoft mit Hints, damit Microsoft den Handshake startet
+    if not saml_request:
+        ms_bootstrap_url = (
+            f"https://client.wvd.microsoft.com/arm/webclient/index.html"
+            f"?tenant={TENANT_ID}"
+            f"&login_hint={urllib.parse.quote(DEFAULT_USER)}"
+            f"&domain_hint=my-gamez.com"
+        )
+        return RedirectResponse(url=ms_bootstrap_url)
 
     return f"""
     <!DOCTYPE html>
@@ -91,7 +100,7 @@ async def login_page(request: Request):
                 <input type="hidden" name="SAMLRequest" value="{saml_request}" />
                 <div class="form-group">
                     <label>E-Mail-Adresse</label>
-                    <input type="email" name="username" value="gast@my-gamez.com" required />
+                    <input type="email" name="username" value="{DEFAULT_USER}" required />
                 </div>
                 <div class="form-group">
                     <label>Passwort</label>
@@ -119,9 +128,6 @@ async def authenticate(
 ):
     key_pem, cert_pem = get_keys()
 
-    final_relay_state = RelayState if RelayState else AVD_TARGET_URL
-
-    # Nur setzen, wenn tatsächlich ein SP-Request vorlag (IdP-Initiated = kein InResponseTo!)
     in_response_to = extract_request_id(SAMLRequest)
     in_resp_attr = f'InResponseTo="{in_response_to}"' if in_response_to else ""
 
@@ -132,8 +138,9 @@ async def authenticate(
 
     response_id = f"_{uuid.uuid4()}"
     assertion_id = f"_{uuid.uuid4()}"
-    TENANT_ID = "eeacdbf6-7e71-4be4-92be-e4ab1ae783b8"
-    recipient_acs = f"https://login.microsoftonline.com/{TENANT_ID}/login"
+
+    # Fester SAML ACS Endpunkt von Microsoft
+    recipient_acs = "https://login.microsoftonline.com/login.srf"
 
     saml_xml = f"""<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
                 xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
@@ -208,7 +215,7 @@ async def authenticate(
     <body onload="document.forms[0].submit()">
         <form method="post" action="{recipient_acs}">
             <input type="hidden" name="SAMLResponse" value="{saml_response_b64}" />
-            <input type="hidden" name="RelayState" value="{final_relay_state}" />
+            <input type="hidden" name="RelayState" value="{RelayState}" />
             <noscript><button type="submit">Weiter</button></noscript>
         </form>
     </body>
