@@ -14,10 +14,7 @@ app = FastAPI(title="DMU SAML IdP")
 IDP_ENTITY_ID = "https://auth.my-gamez.com/saml/metadata"
 TENANT_ID = "eeacdbf6-7e71-4be4-92be-e4ab1ae783b8"
 DEFAULT_USER = "gast@my-gamez.com"
-
-# Offizielle Azure Virtual Desktop Client-ID & Webclient Redirect-URI
-AVD_APP_CLIENT_ID = "a85c96dd-3d51-4a50-ab32-604d13f04da5"
-AVD_REDIRECT_URI = "https://client.wvd.microsoft.com/arm/webclient/index.html"
+AVD_TARGET_URL = f"https://client.wvd.microsoft.com/arm/webclient/index.html?tenant={TENANT_ID}"
 
 
 def get_keys() -> tuple[bytes, bytes]:
@@ -64,16 +61,14 @@ async def login_page(request: Request):
         saml_request = request.query_params.get("SAMLRequest", "")
         relay_state = request.query_params.get("RelayState", "")
 
-    # Wenn der Benutzer die Seite direkt aufruft (kein SAMLRequest vorhanden):
-    # Sauberer GET-Bootstrap über Microsofts Portal-Router mit automatischem Weiterleitungsziel
+    # Erstaufruf: Transparenter Bounce über MyApplications mit striktem returnUrl-Parameter
     if not saml_request:
-        target_avd_url = f"https://client.wvd.microsoft.com/arm/webclient/index.html?tenant={TENANT_ID}"
         params = urllib.parse.urlencode(
             {
                 "tenantid": TENANT_ID,
                 "login_hint": DEFAULT_USER,
                 "domain_hint": "my-gamez.com",
-                "returnUrl": target_avd_url,
+                "returnUrl": AVD_TARGET_URL,
             }
         )
         ms_bootstrap_url = (
@@ -81,7 +76,7 @@ async def login_page(request: Request):
         )
         return RedirectResponse(url=ms_bootstrap_url)
 
-    # Ab hier wird die eigene DMU-ID-Maske gerendert, da der SAMLRequest vorliegt
+    # RelayState von Microsoft unverändert ins Hidden-Input setzen
     return f"""
     <!DOCTYPE html>
     <html lang="de">
@@ -138,6 +133,10 @@ async def authenticate(
 ):
     key_pem, cert_pem = get_keys()
 
+    # Zwingend den RelayState nutzen, den Microsoft uns mitgegeben hat!
+    # Nur wenn dieser tatsächlich leer ist, als Fallback die AVD-URL verwenden.
+    final_relay_state = RelayState if RelayState else AVD_TARGET_URL
+
     in_response_to = extract_request_id(SAMLRequest)
     in_resp_attr = f'InResponseTo="{in_response_to}"' if in_response_to else ""
 
@@ -149,7 +148,6 @@ async def authenticate(
     response_id = f"_{uuid.uuid4()}"
     assertion_id = f"_{uuid.uuid4()}"
 
-    # Fester SAML ACS-Endpunkt von Microsoft
     recipient_acs = "https://login.microsoftonline.com/login.srf"
 
     saml_xml = f"""<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
@@ -205,7 +203,6 @@ async def authenticate(
     )
     signed_assertion = signer.sign(assertion, key=key_pem, cert=cert_pem)
 
-    # Entra verlangt: <ds:Signature> direkt an Position 1 hinter <saml:Issuer>
     sig_elem = signed_assertion.find(
         "{http://www.w3.org/2000/09/xmldsig#}Signature"
     )
@@ -226,7 +223,7 @@ async def authenticate(
     <body onload="document.forms[0].submit()">
         <form method="post" action="{recipient_acs}">
             <input type="hidden" name="SAMLResponse" value="{saml_response_b64}" />
-            <input type="hidden" name="RelayState" value="{RelayState}" />
+            <input type="hidden" name="RelayState" value="{final_relay_state}" />
             <noscript><button type="submit">Weiter</button></noscript>
         </form>
     </body>
