@@ -166,7 +166,9 @@ async def authenticate(
 ):
     key_pem, cert_pem = get_keys()
 
-    final_relay_state = RelayState if RelayState else get_avd_target_url()
+    # 1. WAM benötigt zwingend den exakten RelayState von Microsoft.
+    # Niemals blind mit einer Web-URL überschreiben, wenn Entra den Flow initiiert hat!
+    final_relay_state = RelayState
 
     in_response_to = extract_request_id(SAMLRequest)
     in_resp_attr = f'InResponseTo="{in_response_to}"' if in_response_to else ""
@@ -181,6 +183,7 @@ async def authenticate(
 
     recipient_acs = "https://login.microsoftonline.com/login.srf"
 
+    # WAM / Rich-Client Claims: NameID + ImmutableID Claim
     saml_xml = f"""<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
                 xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
                 ID="{response_id}"
@@ -195,7 +198,7 @@ async def authenticate(
         <saml:Assertion ID="{assertion_id}" Version="2.0" IssueInstant="{issue_instant}">
             <saml:Issuer>{IDP_ENTITY_ID}</saml:Issuer>
             <saml:Subject>
-                <saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">{username}</saml:NameID>
+                <saml:NameID Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent">{username}</saml:NameID>
                 <saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
                     <saml:SubjectConfirmationData NotOnOrAfter="{not_on_or_after}" Recipient="{recipient_acs}" {in_resp_attr}/>
                 </saml:SubjectConfirmation>
@@ -211,11 +214,14 @@ async def authenticate(
                 </saml:AuthnContext>
             </saml:AuthnStatement>
             <saml:AttributeStatement>
+                <saml:Attribute Name="http://schemas.microsoft.com/LiveID/Federation/2008/05/ImmutableID">
+                    <saml:AttributeValue>{username}</saml:AttributeValue>
+                </saml:Attribute>
                 <saml:Attribute Name="http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress">
                     <saml:AttributeValue>{username}</saml:AttributeValue>
                 </saml:Attribute>
-                <saml:Attribute Name="http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name">
-                    <saml:AttributeValue>{username.split('@')[0]}</saml:AttributeValue>
+                <saml:Attribute Name="http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn">
+                    <saml:AttributeValue>{username}</saml:AttributeValue>
                 </saml:Attribute>
                 <saml:Attribute Name="http://schemas.microsoft.com/claims/authnmethodsreferences">
                     <saml:AttributeValue>http://schemas.microsoft.com/claims/multipleauthn</saml:AttributeValue>
