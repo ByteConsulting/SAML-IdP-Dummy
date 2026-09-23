@@ -1,5 +1,6 @@
 import base64
 from datetime import datetime, timedelta, timezone
+import logging
 import os
 import urllib.parse
 import uuid
@@ -8,6 +9,12 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
 from lxml import etree
 from signxml import XMLSigner
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("saml_idp")
 
 app = FastAPI(title="DMU SAML IdP")
 
@@ -45,6 +52,7 @@ def get_keys() -> tuple[bytes, bytes]:
 
 def extract_request_id(saml_request_b64: str) -> str:
     if not saml_request_b64:
+        logger.info("SAMLRequest is empty; no RequestID available")
         return ""
     try:
         raw = base64.b64decode(urllib.parse.unquote(saml_request_b64))
@@ -53,8 +61,11 @@ def extract_request_id(saml_request_b64: str) -> str:
         except Exception:
             decompressed = raw
         root = etree.fromstring(decompressed)
-        return root.get("ID", "")
-    except Exception:
+        request_id = root.get("ID", "")
+        logger.info("Extracted SAML Request ID: %s", request_id)
+        return request_id
+    except Exception as exc:
+        logger.warning("Could not decode SAMLRequest to extract RequestID: %s", exc)
         return ""
 
 
@@ -65,18 +76,36 @@ async def login_page(request: Request):
     saml_request = ""
     relay_state = ""
 
+    logger.info(
+        "Incoming %s request to /saml/login with query params: SAMLRequest=%s RelayState=%s",
+        request.method,
+        "present" if request.query_params.get("SAMLRequest") else "missing",
+        "present" if request.query_params.get("RelayState") else "missing",
+    )
+
     if request.method == "POST":
         form_data = await request.form()
         saml_request = str(form_data.get("SAMLRequest", ""))
         relay_state = str(form_data.get("RelayState", ""))
+        logger.info(
+            "POST /saml/login received form values: SAMLRequest=%s RelayState=%s",
+            "present" if saml_request else "missing",
+            "present" if relay_state else "missing",
+        )
     else:
         saml_request = request.query_params.get("SAMLRequest", "")
         relay_state = request.query_params.get("RelayState", "")
+        logger.info(
+            "GET /saml/login received query values: SAMLRequest=%s RelayState=%s",
+            "present" if saml_request else "missing",
+            "present" if relay_state else "missing",
+        )
 
     # FALL 1: Benutzer ruft die Seite direkt im Browser auf (kein SAML-Request vorhanden)
     # Zeige die saubere DMU-ID Maske. Der Klick startet den Handshake mit Tenant- & User-Hints.
     if not saml_request:
         bootstrap_target = get_avd_target_url()
+        logger.info("No SAMLRequest, redirecting browser to AVD target: %s", bootstrap_target)
         return f"""
         <!DOCTYPE html>
         <html lang="de">
@@ -164,11 +193,19 @@ async def authenticate(
     RelayState: str = Form(""),
     SAMLRequest: str = Form(""),
 ):
+    logger.info(
+        "Incoming authenticate() values: username=%s RelayState_present=%s SAMLRequest_present=%s",
+        username,
+        bool(RelayState),
+        bool(SAMLRequest),
+    )
+
     key_pem, cert_pem = get_keys()
 
     # 1. WAM benötigt zwingend den exakten RelayState von Microsoft.
     # Niemals blind mit einer Web-URL überschreiben, wenn Entra den Flow initiiert hat!
     final_relay_state = RelayState
+    logger.info("Selected final RelayState for response submission: %s", final_relay_state)
 
     in_response_to = extract_request_id(SAMLRequest)
     in_resp_attr = f'InResponseTo="{in_response_to}"' if in_response_to else ""
@@ -252,6 +289,16 @@ async def authenticate(
 
     signed_xml_bytes = etree.tostring(root, xml_declaration=False)
     saml_response_b64 = base64.b64encode(signed_xml_bytes).decode("utf-8")
+    logger.info(
+        "Signed SAMLResponse created. Destination=%s Issuer=%s InResponseTo=%s ResponseID=%s Base64Len=%s",
+        recipient_acs,
+        IDP_ENTITY_ID,
+        in_response_to,
+        response_id,
+        len(saml_response_b64),
+    )
+    logger.info("Outgoing redirect to Microsoft ACS with RelayState: %s", final_relay_state)
+    logger.info("Outgoing POST target: %s", recipient_acs)
 
     return f"""
     <!DOCTYPE html>
