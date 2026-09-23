@@ -17,6 +17,14 @@ DEFAULT_USER = "gast@my-gamez.com"
 AVD_TARGET_URL = f"https://client.wvd.microsoft.com/arm/webclient/index.html?tenant={TENANT_ID}"
 
 
+def get_avd_target_url() -> str:
+    return (
+        f"{AVD_TARGET_URL}"
+        f"&login_hint={urllib.parse.quote(DEFAULT_USER)}"
+        f"&domain_hint=my-gamez.com"
+    )
+
+
 def get_keys() -> tuple[bytes, bytes]:
     env_key = os.getenv("SAML_PRIVATE_KEY")
     env_cert = os.getenv("SAML_PUBLIC_CERT")
@@ -64,11 +72,7 @@ async def login_page(request: Request):
     # FALL 1: Benutzer ruft die Seite direkt im Browser auf (kein SAML-Request vorhanden)
     # Zeige die saubere DMU-ID Maske. Der Klick startet den Handshake mit Tenant- & User-Hints.
     if not saml_request:
-        bootstrap_target = (
-            f"{AVD_TARGET_URL}"
-            f"&login_hint={urllib.parse.quote(DEFAULT_USER)}"
-            f"&domain_hint=my-gamez.com"
-        )
+        bootstrap_target = get_avd_target_url()
         return f"""
         <!DOCTYPE html>
         <html lang="de">
@@ -158,7 +162,7 @@ async def authenticate(
 ):
     key_pem, cert_pem = get_keys()
 
-    final_relay_state = RelayState if RelayState else AVD_TARGET_URL
+    final_relay_state = RelayState if RelayState else get_avd_target_url()
 
     in_response_to = extract_request_id(SAMLRequest)
     in_resp_attr = f'InResponseTo="{in_response_to}"' if in_response_to else ""
