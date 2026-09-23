@@ -17,15 +17,17 @@ DEFAULT_USER = "gast@my-gamez.com"
 AVD_RESOURCE_ID = os.getenv("AVD_RESOURCE_ID", "e711609b-8e92-42b5-b683-250916e4e538")
 AVD_HOSTPOOL_ID = os.getenv("AVD_HOSTPOOL_ID", "fcee5a06-d4e4-4125-fef2-08def36bef90")
 AVD_TARGET_URL = (
-    f"https://windows.cloud.microsoft/webclient/avd/{AVD_RESOURCE_ID}/{AVD_HOSTPOOL_ID}"
+    "ms-avd://connect"
     f"?tenant={TENANT_ID}"
+    f"&resource={AVD_RESOURCE_ID}"
+    f"&hostPool={AVD_HOSTPOOL_ID}"
 )
 
 
 def get_avd_target_url() -> str:
     return (
         f"{AVD_TARGET_URL}"
-        f"#loginHint={urllib.parse.quote(DEFAULT_USER, safe='@')}"
+        f"&loginHint={urllib.parse.quote(DEFAULT_USER, safe='@')}"
     )
 
 
