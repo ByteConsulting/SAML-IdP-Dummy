@@ -69,6 +69,55 @@ def extract_request_id(saml_request_b64: str) -> str:
         return ""
 
 
+def inspect_saml_request(saml_request_b64: str) -> dict:
+    """Dekodiert die SAMLRequest und prüft ID, IsPassive und ForceAuthn."""
+    res = {"id": "", "is_passive": False, "force_authn": False}
+    if not saml_request_b64:
+        return res
+    try:
+        raw = base64.b64decode(urllib.parse.unquote(saml_request_b64))
+        try:
+            decompressed = zlib.decompress(raw, -15)
+        except Exception:
+            decompressed = raw
+
+        root = etree.fromstring(decompressed)
+        res["id"] = root.get("ID", "")
+        res["is_passive"] = root.get("IsPassive", "false").lower() == "true"
+        res["force_authn"] = root.get("ForceAuthn", "false").lower() == "true"
+
+        logger.info(
+            "Parsed SAMLRequest - ID: %s | IsPassive: %s | ForceAuthn: %s",
+            res["id"], res["is_passive"], res["force_authn"],
+        )
+        return res
+    except Exception as exc:
+        logger.warning("Could not parse SAMLRequest XML: %s", exc)
+        return res
+
+
+def build_nopassive_response(in_response_to: str) -> str:
+    """Generiert die von WAM/Entra ID geforderte NoPassive SAML-XML-Antwort."""
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    resp_id = f"_{uuid.uuid4()}"
+    in_resp_attr = f'InResponseTo="{in_response_to}"' if in_response_to else ""
+
+    xml = f"""<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+                ID="{resp_id}"
+                Version="2.0"
+                IssueInstant="{now}"
+                Destination="https://login.microsoftonline.com/login.srf"
+                {in_resp_attr}>
+    <saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">{IDP_ENTITY_ID}</saml:Issuer>
+    <samlp:Status>
+        <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Responder">
+            <samlp:SubStatusCode Value="urn:oasis:names:tc:SAML:2.0:status:NoPassive"/>
+        </samlp:StatusCode>
+    </samlp:Status>
+</samlp:Response>"""
+    return xml
+
+
 @app.api_route(
     "/saml/login", methods=["GET", "POST"], response_class=HTMLResponse
 )
@@ -100,6 +149,41 @@ async def login_page(request: Request):
             "present" if saml_request else "missing",
             "present" if relay_state else "missing",
         )
+
+    parsed_req = inspect_saml_request(saml_request)
+
+    # KRITISCHER FIX FÜR WAM/WINDOWS APP: IsPassive Abfischen!
+    if parsed_req["is_passive"]:
+        logger.info(
+            "IsPassive=true detected. Returning SAML NoPassive response directly to Microsoft ACS."
+        )
+        nopassive_xml = build_nopassive_response(parsed_req["id"])
+
+        key_pem, cert_pem = get_keys()
+        root = etree.fromstring(nopassive_xml.encode("utf-8"))
+        signer = XMLSigner(
+            c14n_algorithm="http://www.w3.org/2001/10/xml-exc-c14n#",
+            signature_algorithm="rsa-sha256",
+            digest_algorithm="sha256",
+        )
+        signed_root = signer.sign(root, key=key_pem, cert=cert_pem)
+        nopassive_b64 = base64.b64encode(etree.tostring(signed_root)).decode("utf-8")
+
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <script>window.onload = function() {{ document.forms[0].submit(); }};</script>
+        </head>
+        <body style="background: #0f172a; color: white;">
+            <p>Processing passive authentication request...</p>
+            <form method="post" action="https://login.microsoftonline.com/login.srf">
+                <input type="hidden" name="SAMLResponse" value="{nopassive_b64}" />
+                <input type="hidden" name="RelayState" value="{relay_state}" />
+            </form>
+        </body>
+        </html>
+        """
 
     # FALL 1: Benutzer ruft die Seite direkt im Browser auf (kein SAML-Request vorhanden)
     # Zeige die saubere DMU-ID Maske. Der Klick startet den Handshake mit Tenant- & User-Hints.
